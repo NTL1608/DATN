@@ -1,0 +1,129 @@
+version: '3.8'
+
+services:
+  # Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: doctorbooking-app
+    container_name: doctorbooking-app
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+      - ./docker/php/local.ini:/usr/local/etc/php/conf.d/local.ini
+    networks:
+      - doctorbooking-network
+    depends_on:
+      - mysql
+      - redis
+      - elasticsearch
+
+  # Web Server
+  nginx:
+    image: nginx:alpine
+    container_name: doctorbooking-nginx
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+      - "443:443"
+    volumes:
+      - ./:/var/www/html
+      - ./docker/nginx/conf.d/:/etc/nginx/conf.d/
+    networks:
+      - doctorbooking-network
+    depends_on:
+      - app
+
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: doctorbooking-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:-doctorbooking}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root}
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./db_doctorbooking.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - doctorbooking-network
+    command: --default-authentication-plugin=mysql_native_password
+
+  # Redis
+  redis:
+    image: redis:alpine
+    container_name: doctorbooking-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    networks:
+      - doctorbooking-network
+
+  # Elasticsearch
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.9
+    container_name: doctorbooking-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - doctorbooking-network
+
+  # Queue Worker
+  queue:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: doctorbooking-queue
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+    networks:
+      - doctorbooking-network
+    depends_on:
+      - mysql
+      - redis
+    command: php artisan queue:work --sleep=3 --tries=3
+
+  # Scheduler (for Laravel Cron)
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: doctorbooking-scheduler
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./:/var/www/html
+    networks:
+      - doctorbooking-network
+    depends_on:
+      - mysql
+      - redis
+    command: >
+      sh -c "while true; do
+        php artisan schedule:run --verbose --no-interaction &
+        sleep 60
+      done"
+
+networks:
+  doctorbooking-network:
+    driver: bridge
+
+volumes:
+  mysql-data:
+    driver: local
+  elasticsearch-data:
+    driver: local
